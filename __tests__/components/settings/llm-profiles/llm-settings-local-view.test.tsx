@@ -16,6 +16,7 @@ import ProfilesService from "#/api/profiles-service/profiles-service.api";
 vi.mock("#/routes/llm-settings", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   return {
+    LLM_PROVIDER_CONNECTION_KEY: "llm.provider_connection_id",
     LlmSettingsScreen: ({
       initialValueOverrides,
       onSaveControlChange,
