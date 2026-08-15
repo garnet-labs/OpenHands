@@ -256,9 +256,21 @@ export function LlmSettingsScreen({
         typeof values[LLM_PROVIDER_CONNECTION_KEY] === "string"
           ? values[LLM_PROVIDER_CONNECTION_KEY]
           : "";
-      const showConnectionSelector =
-        connectionOptions.length > 0 && !isSubscriptionAuth;
       const isLinkedToConnection = Boolean(connectionValue);
+      // Show the selector whenever connections can be linked here. Include the
+      // linked case so a profile pointing at an orphaned connection (its only
+      // connection deleted, or the list still loading) still exposes a control
+      // to unlink — otherwise the API key / base URL inputs stay hidden with no
+      // way to recover.
+      const showConnectionSelector =
+        showProviderConnection &&
+        !isSubscriptionAuth &&
+        (isLinkedToConnection || connectionOptions.length > 0);
+      // Surface an orphaned link (a selected id absent from the fetched list)
+      // as its own option so the dropdown reflects it and can be cleared.
+      const isOrphanedLink =
+        isLinkedToConnection &&
+        !connectionOptions.some((c) => c.id === connectionValue);
 
       const renderConnectionSelector = () => (
         <SettingsDropdownInput
@@ -274,6 +286,9 @@ export function LlmSettingsScreen({
               key: connection.id,
               label: connection.display_name,
             })),
+            ...(isOrphanedLink
+              ? [{ key: connectionValue, label: connectionValue }]
+              : []),
           ]}
           selectedKey={connectionValue || NO_PROVIDER_CONNECTION}
           isClearable={false}
@@ -510,6 +525,7 @@ export function LlmSettingsScreen({
     },
     [
       connectionOptions,
+      showProviderConnection,
       defaultModel,
       embedded,
       isWaitingForSubscriptionModels,
