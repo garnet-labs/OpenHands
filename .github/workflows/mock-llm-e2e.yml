@@ -63,6 +63,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - name: Garnet Runtime Review
+        uses: garnet-org/action@v2
+        with:
+          api_token: ${{ secrets.GARNET_API_TOKEN }}
+
       - name: Read defaults from config/defaults.json
         id: defaults
         run: |
