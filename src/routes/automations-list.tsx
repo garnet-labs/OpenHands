@@ -1,12 +1,5 @@
-import {
-  useState,
-  useMemo,
-  useCallback,
-  useRef,
-  type ChangeEvent,
-  type ReactNode,
-} from "react";
-import { FileUp, RefreshCw } from "lucide-react";
+import { useState, useMemo, useCallback, type ReactNode } from "react";
+import { RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
 import {
@@ -39,11 +32,13 @@ import { ErrorState } from "#/components/features/automations/error-state";
 import { BackendNotConfigured } from "#/components/features/automations/backend-not-configured";
 import { DeleteConfirmationModal } from "#/components/features/automations/delete-confirmation-modal";
 import { EditAutomationModal } from "#/components/features/automations/detail/edit-automation-modal";
+import { AddAutomationMenu } from "#/components/features/automations/add-automation-menu";
 import { AddAutomationModal } from "#/components/features/automations/add-automation-modal";
 import { ImportAutomationModal } from "#/components/features/automations/import-automation-modal";
 import { RecommendedAutomationsLauncher } from "#/components/features/automations/recommended-automations-launcher";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { useTracking } from "#/hooks/use-tracking";
+import { useAutomationPermissions } from "#/hooks/use-automation-permissions";
 import type { Automation, AutomationSpec } from "#/types/automation";
 import {
   getAutomationExportFilename,
@@ -54,6 +49,7 @@ import {
   automationDetailPath,
   getDashboardSpec,
   getInterfaceCopy,
+  hasAutomationInterface,
 } from "#/manifests/automation-interface";
 import {
   applyDashboardView,
@@ -76,6 +72,18 @@ import { ManifestSubpageLayout } from "#/components/features/manifest/manifest-s
 import { cn, downloadBlob } from "#/utils/utils";
 
 const PAGE_SIZE = 50;
+
+/**
+ * The page renders the interface manifest's copy, so without an admitted
+ * manifest there is nothing to render: a 404, which the layout's error
+ * boundary renders.
+ */
+export const clientLoader = () => {
+  if (!hasAutomationInterface()) {
+    throw new Response(null, { status: 404, statusText: "Not Found" });
+  }
+  return null;
+};
 
 export default function AutomationsList() {
   const { t } = useTranslation("openhands");
@@ -107,13 +115,15 @@ export default function AutomationsList() {
   const [editTarget, setEditTarget] = useState<Automation | null>(null);
   const [isAddAutomationOpen, setIsAddAutomationOpen] = useState(false);
   const [importSpec, setImportSpec] = useState<AutomationSpec | null>(null);
-  const importInputRef = useRef<HTMLInputElement>(null);
+  const [isImportOpen, setIsImportOpen] = useState(false);
 
   const active = useActiveBackend();
   const { navigate } = useNavigation();
-  // Edit is a local-backend-only feature in MVP — cloud automations
-  // are managed elsewhere and we don't yet surface them here.
-  const canEdit = active.backend.kind === "local";
+  // Git Sync is only available on local backends.
+  const isLocalBackend = active.backend.kind === "local";
+  // Creating an automation requires manage_automations (no owner escape hatch
+  // — it's a new record, not a mutation of an existing one).
+  const { canManage } = useAutomationPermissions();
 
   const {
     data: healthData,
@@ -221,12 +231,7 @@ export default function AutomationsList() {
     trackAutomationExported({ backendKind: active.backend.kind });
   };
 
-  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const input = event.currentTarget;
-    const file = input.files?.[0];
-    input.value = "";
-    if (!file) return;
-
+  const handleImportFile = async (file: File) => {
     try {
       let parsed: unknown;
       try {
@@ -250,6 +255,7 @@ export default function AutomationsList() {
       { ...importSpec, enabled: false },
       {
         onSuccess: (created) => {
+          setIsImportOpen(false);
           setImportSpec(null);
           displaySuccessToastWithLink(
             t(I18nKey.AUTOMATIONS$IMPORT_SUCCESS, { name: created.name }),
@@ -332,11 +338,9 @@ export default function AutomationsList() {
     return renderShell(
       <div>
         <h1 className="text-xl font-medium text-content">
-          {interfaceCopy.listTitle ?? t(I18nKey.AUTOMATIONS$TITLE)}
+          {interfaceCopy.listTitle}
         </h1>
-        <p className="mt-1 text-sm text-muted">
-          {interfaceCopy.listSubtitle ?? t(I18nKey.AUTOMATIONS$SUBTITLE)}
-        </p>
+        <p className="mt-1 text-sm text-muted">{interfaceCopy.listSubtitle}</p>
         <div className="mt-6 flex flex-col gap-3">
           {Array.from({ length: 3 }).map((_, i) => (
             <AutomationCardSkeleton key={`skeleton-${String(i)}`} />
@@ -351,11 +355,9 @@ export default function AutomationsList() {
     return renderShell(
       <div>
         <h1 className="text-xl font-medium text-content">
-          {interfaceCopy.listTitle ?? t(I18nKey.AUTOMATIONS$TITLE)}
+          {interfaceCopy.listTitle}
         </h1>
-        <p className="mt-1 text-sm text-muted">
-          {interfaceCopy.listSubtitle ?? t(I18nKey.AUTOMATIONS$SUBTITLE)}
-        </p>
+        <p className="mt-1 text-sm text-muted">{interfaceCopy.listSubtitle}</p>
         <BackendNotConfigured onRetry={refetchHealth} />
       </div>,
     );
@@ -367,14 +369,14 @@ export default function AutomationsList() {
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-xl font-semibold text-content">
-            {interfaceCopy.listTitle ?? t(I18nKey.AUTOMATIONS$TITLE)}
+            {interfaceCopy.listTitle}
           </h1>
           <p className="mt-1 text-sm text-muted">
-            {interfaceCopy.listSubtitle ?? t(I18nKey.AUTOMATIONS$SUBTITLE)}
+            {interfaceCopy.listSubtitle}
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
-          {canEdit && (
+          {isLocalBackend && (
             <BrandButton
               type="button"
               variant="secondary"
@@ -386,33 +388,12 @@ export default function AutomationsList() {
               {t(I18nKey.AUTOMATIONS$GIT_SYNC$NAV_BUTTON)}
             </BrandButton>
           )}
-          <BrandButton
-            type="button"
-            variant="secondary"
-            testId="automations-import-automation"
-            className="whitespace-nowrap"
-            onClick={() => importInputRef.current?.click()}
-            startContent={<FileUp className="size-4" aria-hidden />}
-          >
-            {t(I18nKey.AUTOMATIONS$IMPORT)}
-          </BrandButton>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept="application/json,.json"
-            className="hidden"
-            data-testid="automations-import-file"
-            onChange={handleImportFile}
-          />
-          <BrandButton
-            type="button"
-            variant="secondary"
-            testId="automations-add-automation"
-            className="whitespace-nowrap"
-            onClick={() => setIsAddAutomationOpen(true)}
-          >
-            {t(I18nKey.AUTOMATIONS$ADD_AUTOMATION)}
-          </BrandButton>
+          {canManage ? (
+            <AddAutomationMenu
+              onAdd={() => setIsAddAutomationOpen(true)}
+              onImport={() => setIsImportOpen(true)}
+            />
+          ) : null}
         </div>
       </div>
 
@@ -486,7 +467,7 @@ export default function AutomationsList() {
                 }
                 onDelete={handleDeleteRequest}
                 onExport={handleExport}
-                onEdit={canEdit ? handleEditRequest : undefined}
+                onEdit={handleEditRequest}
                 insights={groupInsights}
               />
               <AutomationGroup
@@ -503,7 +484,7 @@ export default function AutomationsList() {
                 }
                 onDelete={handleDeleteRequest}
                 onExport={handleExport}
-                onEdit={canEdit ? handleEditRequest : undefined}
+                onEdit={handleEditRequest}
                 insights={groupInsights}
               />
 
@@ -535,7 +516,7 @@ export default function AutomationsList() {
         onCancel={() => setDeleteTarget(null)}
       />
 
-      {/* Edit modal — local backends only */}
+      {/* Edit modal */}
       {editTarget && (
         <EditAutomationModal
           automation={editTarget}
@@ -550,11 +531,15 @@ export default function AutomationsList() {
       />
 
       <ImportAutomationModal
-        isOpen={importSpec !== null}
+        isOpen={isImportOpen}
         spec={importSpec}
         isImporting={importMutation.isPending}
-        onClose={() => setImportSpec(null)}
+        onClose={() => {
+          setIsImportOpen(false);
+          setImportSpec(null);
+        }}
         onImport={handleImportConfirm}
+        onFile={handleImportFile}
       />
     </>,
   );
