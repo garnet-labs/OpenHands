@@ -40,6 +40,9 @@ jobs:
     needs: prepare-test-matrix
     name: test-and-build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -49,6 +52,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - uses: garnet-org/action@8cccc85403e4ac4e05fb7822c994d3c199f9aa57 # v2.4.0
+        if: runner.os == 'Linux'
+        with:
+          job_index: ${{ strategy.job-index }}
       - name: Reject temporary artifacts in release PRs
         if: >-
           matrix.full_checks &&
