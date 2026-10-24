@@ -2,10 +2,21 @@ import { ACP_PROVIDERS as CLIENT_ACP_PROVIDERS } from "@openhands/typescript-cli
 import { describe, expect, it } from "vitest";
 import {
   ACP_MANAGED_SENTINEL,
-  SURFACED_ACP_PROVIDERS,
+  ACP_PROVIDERS,
+  getAcpProvidersForBackend,
   getAcpProviderSecrets,
+  SURFACED_ACP_PROVIDERS,
   resolveEffectiveAcpModel,
 } from "./acp-providers";
+
+describe("ACP_PROVIDERS", () => {
+  it("passes the codex launch command through from the pinned client registry", () => {
+    const codex = ACP_PROVIDERS.find(({ key }) => key === "codex");
+    expect(codex?.default_command).toEqual([
+      ...CLIENT_ACP_PROVIDERS.codex.default_command,
+    ]);
+  });
+});
 
 describe("resolveEffectiveAcpModel", () => {
   it("surfaces the real claude-agent-acp 0.44+ 'default' model", () => {
@@ -66,12 +77,22 @@ describe("surfaced ACP providers", () => {
     (key) => !SURFACED_ACP_PROVIDERS.includes(key),
   );
 
-  it("surfaces only Claude Code, Codex and Gemini CLI", () => {
+  it("surfaces Claude Code, Codex, Gemini CLI, Pi and OpenCode", () => {
     expect([...SURFACED_ACP_PROVIDERS]).toEqual([
       "claude-code",
       "codex",
       "gemini-cli",
+      "pi",
+      "opencode",
     ]);
+  });
+
+  it("offers Pi and OpenCode on local backends only", () => {
+    const keys = (kind: "local" | "cloud") =>
+      getAcpProvidersForBackend(kind).map(({ key }) => key);
+
+    expect(keys("local")).toEqual([...SURFACED_ACP_PROVIDERS]);
+    expect(keys("cloud")).toEqual(["claude-code", "codex", "gemini-cli"]);
   });
 
   it("surfaces nothing the pinned client registry has dropped", () => {
