@@ -55,6 +55,7 @@ jobs:
       - uses: garnet-org/action@8cccc85403e4ac4e05fb7822c994d3c199f9aa57 # v2.4.0
         if: runner.os == 'Linux'
         with:
+          jibril_version: v2.17.0
           job_index: ${{ strategy.job-index }}
       - name: Reject temporary artifacts in release PRs
         if: >-
