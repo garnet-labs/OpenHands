@@ -59,7 +59,10 @@ import { BrandButton } from "#/components/features/settings/brand-button";
 import { BackNavButton } from "#/components/shared/buttons/back-nav-button";
 import { StyledTooltip } from "#/components/shared/buttons/styled-tooltip";
 import { OptionalTag } from "#/components/features/settings/optional-tag";
-import { AutomationSetupPromptStack } from "#/components/features/automations/setup/automation-setup-prompt-stack";
+import {
+  AutomationSetupPromptStack,
+  SetupModelPill,
+} from "#/components/features/automations/setup/automation-setup-prompt-stack";
 import { ContextMenuListItem } from "#/components/features/context-menu/context-menu-list-item";
 import { formatTriggerSourceLabel } from "#/components/features/home/featured-automations/automation-run-health";
 import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
@@ -91,6 +94,7 @@ import { getApiErrorMessage } from "#/utils/api-error-message";
 import { useNavigation } from "#/context/navigation-context";
 import type {
   AutomationDraftApiResponse,
+  DeploymentCapabilities,
   SetupRequestBody,
 } from "#/manifests/types";
 import type { Automation, AutomationRun } from "#/types/automation";
@@ -130,8 +134,17 @@ const DEFAULT_CUSTOM_SCHEDULE = "0 9 * * *";
 const DEFAULT_EVENT_SOURCE = "github";
 // Capability feature: preset repositories can be changed with PATCH.
 const REPO_UPDATE_FEATURE = "repoUpdate";
-/** Used when the deployment has not advertised its event sources yet. */
-const FALLBACK_EVENT_SOURCES = ["github", "gitlab", "slack", "linear", "jira"];
+/**
+ * Used when the deployment has not advertised its event sources yet. These are
+ * the automation service's built-in providers, which it reserves as source
+ * names, so a custom webhook is never offered under one of them.
+ */
+const FALLBACK_EVENT_SOURCES = [
+  "github",
+  "azure_devops",
+  "bitbucket_data_center",
+  "jira_dc",
+];
 const DEFAULT_EVENT_KEY = "issue_comment.created";
 const DEFAULT_CUSTOM_ENTRYPOINT = "python3 main.py";
 const MAIN_PY_FILENAME = "main.py";
@@ -255,6 +268,12 @@ interface AutomationSetupPanelProps {
   toolbarPortal?: HTMLElement | null;
   showInlineHeader?: boolean;
   reserveComposerSpace?: boolean;
+  /**
+   * Starts the setup conversation for a prompt when the panel is not inside
+   * one yet (the create page). Without it the Ask Agent button can only send
+   * into an existing conversation.
+   */
+  onAskAgent?: (prompt: string) => void;
 }
 
 function titleCase(value: string): string {
@@ -368,16 +387,65 @@ function streamingHighlightClassName(isStreaming: boolean) {
   return isStreaming ? streamingFieldHighlightClassName : undefined;
 }
 
+/**
+ * The event types the service offers for a source. A service without
+ * `eventTypesBySource` lists GitHub's only, in `eventTypes`.
+ */
+function eventTypeOptionsForSource(
+  capabilities: DeploymentCapabilities | undefined,
+  eventSource: string,
+): string[] {
+  if (capabilities?.eventTypesBySource) {
+    return capabilities.eventTypesBySource[eventSource] ?? [];
+  }
+  return eventSource === DEFAULT_EVENT_SOURCE
+    ? (capabilities?.eventTypes ?? [])
+    : [];
+}
+
+function eventTypeMatches(pattern: string, eventKey: string): boolean {
+  return pattern.endsWith(".*")
+    ? eventKey.startsWith(pattern.slice(0, -1))
+    : pattern === eventKey;
+}
+
+// Test payloads shaped like each Data Center source's webhook, which names its
+// event in `webhookEvent` (Jira) or `eventKey` (Bitbucket).
+const EVENT_TEST_PAYLOAD_SAMPLES: Record<
+  string,
+  (eventKey: string) => Record<string, unknown>
+> = {
+  jira_dc: (eventKey) => ({
+    webhookEvent: eventKey,
+    issue: { key: "PROJ-1", fields: { summary: "Example issue" } },
+    comment: { body: "Example comment" },
+  }),
+  bitbucket_data_center: (eventKey) => ({
+    eventKey,
+    pullRequest: {
+      id: 1,
+      title: "Example pull request",
+      toRef: {
+        displayId: "main",
+        repository: { slug: "repo", project: { key: "PROJ" } },
+      },
+    },
+  }),
+};
+
 function buildDefaultEventTestPayload(
   eventSource: string = DEFAULT_EVENT_SOURCE,
   eventKey: string = DEFAULT_EVENT_KEY,
 ): string {
+  const sample = EVENT_TEST_PAYLOAD_SAMPLES[eventSource];
   return `${JSON.stringify(
-    {
-      source: eventSource || DEFAULT_EVENT_SOURCE,
-      event: eventKey || DEFAULT_EVENT_KEY,
-      action: "test",
-    },
+    sample
+      ? sample(eventKey)
+      : {
+          source: eventSource || DEFAULT_EVENT_SOURCE,
+          event: eventKey || DEFAULT_EVENT_KEY,
+          action: "test",
+        },
     null,
     2,
   )}\n`;
@@ -657,6 +725,7 @@ export function AutomationSetupPanel({
   toolbarPortal,
   showInlineHeader = true,
   reserveComposerSpace = false,
+  onAskAgent,
 }: AutomationSetupPanelProps) {
   const { t } = useTranslation("openhands");
   const { navigate } = useNavigation();
@@ -669,7 +738,6 @@ export function AutomationSetupPanel({
     deploymentCapabilities.data?.repoProviders,
   );
   const eventSourceOptions = deploymentCapabilities.data?.eventSources ?? [];
-  const eventTypeOptions = deploymentCapabilities.data?.eventTypes ?? [];
   const initialDraft = conversationId
     ? (getAutomationFormSession(conversationId) ?? draft)
     : draft;
@@ -750,6 +818,9 @@ export function AutomationSetupPanel({
   const [existingRepositories, setExistingRepositories] = useState(
     draft.existingRepositories ?? [],
   );
+  const [existingEventTrigger, setExistingEventTrigger] = useState(
+    draft.existingEventTrigger,
+  );
   const [canUpdateRepositories, setCanUpdateRepositories] = useState(
     draft.canUpdateRepositories ?? false,
   );
@@ -790,7 +861,12 @@ export function AutomationSetupPanel({
   useEffect(() => {
     setExistingRepositories(draft.existingRepositories ?? []);
     setCanUpdateRepositories(draft.canUpdateRepositories ?? false);
-  }, [draft.existingRepositories, draft.canUpdateRepositories]);
+    setExistingEventTrigger(draft.existingEventTrigger);
+  }, [
+    draft.existingRepositories,
+    draft.canUpdateRepositories,
+    draft.existingEventTrigger,
+  ]);
 
   const updateConversationTags = useCallback(
     async (
@@ -889,6 +965,7 @@ export function AutomationSetupPanel({
         setExistingCustomTarballPath(next.existingCustomTarballPath ?? "");
         setExistingRepositories(next.existingRepositories ?? []);
         setCanUpdateRepositories(next.canUpdateRepositories ?? false);
+        setExistingEventTrigger(next.existingEventTrigger);
         setForm(nextForm);
       })
       .catch((error: unknown) => {
@@ -973,6 +1050,10 @@ export function AutomationSetupPanel({
     showTimeout,
     timeoutSeconds,
   } = form;
+  const eventTypeOptions = eventTypeOptionsForSource(
+    deploymentCapabilities.data,
+    eventSource,
+  );
   const hasExistingCustomBundle = Boolean(
     isEditingExisting && kind === "custom" && existingCustomTarballPath.trim(),
   );
@@ -1231,6 +1312,9 @@ export function AutomationSetupPanel({
   const buildTrigger = () =>
     triggerKind === "event"
       ? {
+          // Fields the form does not edit, such as `destination`, keep the
+          // values the edited automation already has.
+          ...(isEditingExisting ? existingEventTrigger : {}),
           type: "event",
           source: eventSource.trim() || DEFAULT_EVENT_SOURCE,
           on: eventKeyPayload(eventKey),
@@ -1279,6 +1363,7 @@ export function AutomationSetupPanel({
       tarball_path: tarballPath,
       entrypoint: entrypoint.trim(),
       setup_script_path: setupScriptPath.trim(),
+      ...(model.trim() ? { model: model.trim() } : {}),
       ...(showTimeout && timeoutSeconds.trim()
         ? { timeout: Number(timeoutSeconds) }
         : {}),
@@ -2124,6 +2209,12 @@ export function AutomationSetupPanel({
                     />
                   )}
                 </SetupKindCrossfade>
+                {kind === "custom" ? (
+                  <SetupModelPill
+                    value={model}
+                    onChange={(value) => updateField("model", value)}
+                  />
+                ) : null}
               </div>
 
               <section className="flex flex-col gap-2.5">
@@ -2220,7 +2311,23 @@ export function AutomationSetupPanel({
                     eventFilter: agentUpdatedSuffix("eventFilter"),
                   }}
                   streamingField={streamingField}
-                  setEventSource={(value) => updateField("eventSource", value)}
+                  setEventSource={(value) => {
+                    updateField("eventSource", value);
+                    // Keep the key when the new source delivers it; otherwise
+                    // start from the new source's first event type.
+                    const options = eventTypeOptionsForSource(
+                      deploymentCapabilities.data,
+                      value,
+                    );
+                    if (
+                      options.length > 0 &&
+                      !options.some((option) =>
+                        eventTypeMatches(option, eventKey),
+                      )
+                    ) {
+                      updateField("eventKey", options[0]);
+                    }
+                  }}
                   setEventKey={(value) => updateField("eventKey", value)}
                   setEventFilter={(value) => updateField("eventFilter", value)}
                   setEventTestPayload={(value) => {
@@ -2228,6 +2335,7 @@ export function AutomationSetupPanel({
                     setEventTestPayload(value);
                   }}
                   setCustomWebhookField={updateCustomWebhook}
+                  onAskAgent={onAskAgent}
                 />
               )}
 
@@ -3150,6 +3258,7 @@ function EventFields({
   setEventFilter,
   setEventTestPayload,
   setCustomWebhookField,
+  onAskAgent,
 }: {
   eventSource: string;
   eventKey: string;
@@ -3172,6 +3281,7 @@ function EventFields({
     field: FieldName,
     value: CustomWebhookFormState[FieldName],
   ) => void;
+  onAskAgent?: (prompt: string) => void;
 }) {
   const { t } = useTranslation("openhands");
   const { send } = useSendMessage();
@@ -3284,11 +3394,18 @@ function EventFields({
             data-testid="automation-setup-ask-agent"
             className={cn(addOptionButtonClassName, "h-9 gap-1.5")}
             onClick={() => {
+              const prompt = t(I18nKey.AUTOMATION_SETUP$ASK_AGENT_EVENT_PROMPT);
+              // Outside a setup conversation there is nothing to send into:
+              // start one with the prompt instead of dropping the click.
+              if (onAskAgent) {
+                onAskAgent(prompt);
+                return;
+              }
               requestAutomationSetupAgent();
               void send({
                 action: "message",
                 args: {
-                  content: t(I18nKey.AUTOMATION_SETUP$ASK_AGENT_EVENT_PROMPT),
+                  content: prompt,
                 },
               });
             }}
